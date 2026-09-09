@@ -28,7 +28,6 @@ def _prepare_foreground_mask(crop: np.ndarray) -> np.ndarray:
     else:
         gray = crop
 
-    # Dark-text / light-background mask
     _, dark_mask = cv2.threshold(
         gray,
         0,
@@ -36,7 +35,6 @@ def _prepare_foreground_mask(crop: np.ndarray) -> np.ndarray:
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
     )
 
-    # Light-text / dark-background mask
     _, light_mask = cv2.threshold(
         gray,
         0,
@@ -47,8 +45,6 @@ def _prepare_foreground_mask(crop: np.ndarray) -> np.ndarray:
     dark_ratio = np.count_nonzero(dark_mask) / dark_mask.size
     light_ratio = np.count_nonzero(light_mask) / light_mask.size
 
-    # Prefer the mask with the smaller foreground coverage.
-    # This avoids treating the entire background as foreground.
     if dark_ratio <= light_ratio:
         mask = dark_mask
         coverage = dark_ratio
@@ -56,7 +52,6 @@ def _prepare_foreground_mask(crop: np.ndarray) -> np.ndarray:
         mask = light_mask
         coverage = light_ratio
 
-    # Reject masks that essentially cover the whole region.
     if coverage >= 0.95:
         return np.zeros_like(mask)
 
@@ -66,16 +61,17 @@ def _prepare_foreground_mask(crop: np.ndarray) -> np.ndarray:
 def _component_heights(
     mask: np.ndarray,
     min_area: int = 2,
-) -> list[int]:
+) -> list[tuple[int, int, int, float, float]]:
+    """Return usable component geometry as (height, width, area, cx, cy)."""
     if mask.size == 0:
         return []
 
-    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(
+    num_labels, _, stats, centroids = cv2.connectedComponentsWithStats(
         mask,
         connectivity=8,
     )
 
-    heights = []
+    components = []
 
     for label in range(1, num_labels):
         area = int(stats[label, cv2.CC_STAT_AREA])
@@ -88,9 +84,67 @@ def _component_heights(
         if height <= 1 or width <= 0:
             continue
 
-        heights.append(height)
+        components.append(
+            (
+                height,
+                width,
+                area,
+                float(centroids[label][0]),
+                float(centroids[label][1]),
+            )
+        )
 
-    return heights
+    return components
+
+
+def _has_text_like_row_support(
+    components: list[tuple[int, int, int, float, float]],
+) -> bool:
+    """Check for repeated text-like component geometry.
+
+    Photographic texture can create connected components with plausible heights,
+    but text normally provides either a repeated character-height cluster or a
+    short horizontal row of compatible components. This is a conservative gate;
+    it does not replace OCR or typographic measurement.
+    """
+    if len(components) < 3:
+        return False
+
+    # Ignore tiny one/two-pixel structures when looking for a dominant
+    # character-height cluster. They are common in compression/texture noise.
+    usable = [component for component in components if component[0] >= 3]
+    if len(usable) < 3:
+        return False
+
+    best_cluster_count = 0
+    best_row_count = 0
+    best_height = 0
+
+    for component in usable:
+        height = component[0]
+        cluster = [
+            other
+            for other in usable
+            if abs(other[0] - height) <= 1
+        ]
+
+        row_tolerance = max(2.0, 1.5 * height)
+        row_count = max(
+            sum(abs(other[4] - member[4]) <= row_tolerance for other in cluster)
+            for member in cluster
+        )
+
+        if (len(cluster), row_count) > (best_cluster_count, best_row_count):
+            best_cluster_count = len(cluster)
+            best_row_count = row_count
+            best_height = height
+
+    # Repeated height is strong evidence even when perspective causes small
+    # baseline shifts; row support is the weaker fallback for clean text.
+    if best_cluster_count >= 10:
+        return True
+
+    return best_row_count >= 3
 
 
 def estimate_character_height(
@@ -114,7 +168,6 @@ def estimate_character_height(
 
     image_height, image_width = image.shape[:2]
 
-    # Clip bbox to image boundaries.
     x1 = max(0, min(x1, image_width))
     x2 = max(0, min(x2, image_width))
     y1 = max(0, min(y1, image_height))
@@ -124,12 +177,10 @@ def estimate_character_height(
         raise ValueError("bbox does not overlap the image")
 
     crop = image[y1:y2, x1:x2]
-
     mask = _prepare_foreground_mask(crop)
+    components = _component_heights(mask)
 
-    heights = _component_heights(mask)
-
-    if not heights:
+    if not _has_text_like_row_support(components):
         return {
             "status": "NO_FOREGROUND",
             "character_height_px": None,
@@ -137,27 +188,24 @@ def estimate_character_height(
             "components_used": 0,
         }
 
-    heights_array = np.asarray(heights, dtype=np.float32)
+    heights_array = np.asarray(
+        [component[0] for component in components],
+        dtype=np.float32,
+    )
 
-    # Robust central estimate.
     character_height = float(np.median(heights_array))
+    component_count = len(components)
 
-    component_count = len(heights)
-
-    # Confidence is intentionally heuristic.
-    # More usable components and lower spread increase confidence.
-    median_height = character_height
-
-    if median_height <= 0:
+    if character_height <= 0:
         confidence = 0.0
     else:
         deviation = float(
-            np.median(np.abs(heights_array - median_height))
+            np.median(np.abs(heights_array - character_height))
         )
 
         consistency = max(
             0.0,
-            1.0 - (deviation / median_height),
+            1.0 - (deviation / character_height),
         )
 
         sample_factor = min(

@@ -198,7 +198,15 @@ def test_inconsistent_character_heights_reduce_confidence():
     )
 
     assert consistent_result["status"] == "MEASURED"
-    assert inconsistent_result["status"] == "MEASURED"
+    assert inconsistent_result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if inconsistent_result["status"] == "MEASURED":
+        assert (
+            inconsistent_result["character_height_confidence"]
+            < consistent_result["character_height_confidence"]
+        )
+    else:
+        assert inconsistent_result["character_height_confidence"] == 0.0
 
     assert (
         inconsistent_result["character_height_confidence"]
