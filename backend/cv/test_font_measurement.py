@@ -254,3 +254,147 @@ def test_dominant_text_population_wins_over_mixed_noise():
     ]
 
     assert set(heights).issubset({12, 13})
+
+def test_uneven_lighting_preserves_text_measurement():
+    """
+    Text remains visible when the background has a gradual
+    brightness gradient.
+    """
+    height, width = 100, 200
+    image = np.zeros((height, width), dtype=np.uint8)
+
+    # Gradual background illumination.
+    for x in range(width):
+        brightness = int(80 + (120 * x / width))
+        image[:, x] = brightness
+
+    # Same-height text-like components.
+    image[30:50, 20:35] = 20
+    image[30:50, 45:60] = 20
+    image[30:50, 70:85] = 20
+
+    result = estimate_character_height(image, [10, 20, 100, 60])
+
+    assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if result["status"] == "MEASURED":
+        assert result["character_height_px"] > 0
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+
+def test_low_contrast_text_does_not_crash():
+    """
+    Low-contrast text should be handled safely even if the
+    baseline cannot reliably measure it.
+    """
+    image = np.full((100, 200), 150, dtype=np.uint8)
+
+    image[30:50, 20:35] = 125
+    image[30:50, 45:60] = 125
+    image[30:50, 70:85] = 125
+
+    result = estimate_character_height(image, [10, 20, 100, 60])
+
+    assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if result["status"] == "MEASURED":
+        assert result["character_height_px"] > 0
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+
+def test_text_with_shadow_variation_is_handled():
+    """
+    Text over a region with local brightness variation should
+    remain safely processable.
+    """
+    image = np.full((120, 220), 200, dtype=np.uint8)
+
+    # Shadow/illumination variation.
+    image[20:100, :] -= np.linspace(
+        0,
+        80,
+        220,
+        dtype=np.uint8,
+    )
+
+    # Text-like components.
+    image[40:60, 25:40] = 30
+    image[40:60, 55:70] = 30
+    image[40:60, 85:100] = 30
+
+    result = estimate_character_height(image, [10, 20, 120, 80])
+
+    assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if result["status"] == "MEASURED":
+        assert result["character_height_px"] > 0
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+def test_mild_blur_preserves_text_measurement():
+    """
+    Mild photographic blur should still be handled safely.
+    """
+    image = make_text_image()
+
+    blurred = cv2.GaussianBlur(
+        image,
+        (3, 3),
+        0,
+    )
+
+    result = estimate_character_height(
+        blurred,
+        [10, 20, 100, 60],
+    )
+
+    assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if result["status"] == "MEASURED":
+        assert result["character_height_px"] > 0
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+
+def test_strong_blur_is_handled_safely():
+    """
+    Strong blur may make text unreliable, but the estimator
+    must fail conservatively rather than fabricate a result.
+    """
+    image = make_text_image()
+
+    blurred = cv2.GaussianBlur(
+        image,
+        (9, 9),
+        0,
+    )
+
+    result = estimate_character_height(
+        blurred,
+        [10, 20, 100, 60],
+    )
+
+    assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if result["status"] == "MEASURED":
+        assert result["character_height_px"] > 0
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+
+def test_blur_does_not_produce_invalid_confidence():
+    """
+    Blur must never produce an invalid confidence value.
+    """
+    image = make_text_image()
+
+    for kernel_size in [(3, 3), (5, 5), (7, 7)]:
+        blurred = cv2.GaussianBlur(
+            image,
+            kernel_size,
+            0,
+        )
+
+        result = estimate_character_height(
+            blurred,
+            [10, 20, 100, 60],
+        )
+
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
