@@ -398,3 +398,88 @@ def test_blur_does_not_produce_invalid_confidence():
         )
 
         assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+# ---------------------------------------------------------
+# Phase 3.9.5 — Rotation / Orientation Robustness
+# ---------------------------------------------------------
+
+def test_small_rotation_preserves_safe_measurement():
+    image = make_text_image()
+
+    rotated = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+
+    h, w = rotated.shape[:2]
+    result = estimate_character_height(
+        rotated,
+        [0, 0, w, h],
+    )
+
+    assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+
+    if result["status"] == "MEASURED":
+        assert result["character_height_px"] > 0
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+
+def test_rotated_text_does_not_produce_invalid_confidence():
+    image = make_text_image()
+
+    for angle in [90, 180, 270]:
+        h, w = image.shape[:2]
+        center = (w // 2, h // 2)
+
+        matrix = cv2.getRotationMatrix2D(
+            center,
+            angle,
+            1.0,
+        )
+
+        rotated = cv2.warpAffine(
+            image,
+            matrix,
+            (w, h),
+            borderValue=255,
+        )
+
+        result = estimate_character_height(
+            rotated,
+            [0, 0, w, h],
+        )
+
+        assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+        if result["status"] == "MEASURED":
+            assert result["character_height_px"] > 0
+
+
+def test_rotated_text_does_not_crash_at_different_angles():
+    image = make_text_image()
+
+    h, w = image.shape[:2]
+    center = (w // 2, h // 2)
+
+    for angle in [-30, -15, -5, 5, 15, 30]:
+        matrix = cv2.getRotationMatrix2D(
+            center,
+            angle,
+            1.0,
+        )
+
+        rotated = cv2.warpAffine(
+            image,
+            matrix,
+            (w, h),
+            borderValue=255,
+        )
+
+        result = estimate_character_height(
+            rotated,
+            [0, 0, w, h],
+        )
+
+        assert result["status"] in {"MEASURED", "NO_FOREGROUND"}
+        assert 0.0 <= result["character_height_confidence"] <= 1.0
+
+        if result["status"] == "MEASURED":
+            assert result["character_height_px"] > 0
