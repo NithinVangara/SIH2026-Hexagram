@@ -4,10 +4,10 @@ from datetime import datetime
 
 DATE_PATTERNS = [
     re.compile(
-        r"\b(0?[1-9]|[12]\d|3[01])\s*[/\-.]\s*(0?[1-9]|1[0-2])\s*[/\-.]\s*(20\d{2})\b"
+        r"\b(0?[1-9]|[12]\d|3[01])\s*[/\-.]\s*(0?[1-9]|1[0-2])\s*[/\-.]\s*(20\d{2}|\d{2})\b"
     ),
     re.compile(
-        r"\b(0?[1-9]|1[0-2])\s*[/\-.]\s*(20\d{2})\b"
+        r"\b(0?[1-9]|1[0-2])\s*[/\-.]\s*(20\d{2}|\d{2})\b"
     ),
 ]
 
@@ -15,20 +15,20 @@ DATE_PATTERNS = [
 LABEL_PATTERNS = {
     "manufacturing_date": re.compile(
         r"\b(?:MFG|MFD|Mfg\.?|Mfd\.?)\s*(?:DATE)?\s*[:\-]?\s*"
-        r"([0-9]{1,2}\s*[/\-.]\s*[0-9]{1,2}\s*[/\-.]\s*20\d{2}|"
-        r"[0-9]{1,2}\s*[/\-.]\s*20\d{2})",
+        r"([0-9]{1,2}\s*[/\-.]\s*[0-9]{1,2}\s*[/\-.]\s*(?:20\d{2}|\d{2})|"
+        r"[0-9]{1,2}\s*[/\-.]\s*(?:20\d{2}|\d{2}))",
         re.IGNORECASE,
     ),
     "packing_date": re.compile(
         r"\b(?:PKD|PKT|PACKED\s*ON|PACKING\s*DATE)\s*[:\-]?\s*"
-        r"([0-9]{1,2}\s*[/\-.]\s*[0-9]{1,2}\s*[/\-.]\s*20\d{2}|"
-        r"[0-9]{1,2}\s*[/\-.]\s*20\d{2})",
+        r"([0-9]{1,2}\s*[/\-.]\s*[0-9]{1,2}\s*[/\-.]\s*(?:20\d{2}|\d{2})|"
+        r"[0-9]{1,2}\s*[/\-.]\s*(?:20\d{2}|\d{2}))",
         re.IGNORECASE,
     ),
     "expiry_date": re.compile(
         r"\b(?:EXP|EXPIRY|EXPIRY\s*DATE)\s*[:\-]?\s*"
-        r"([0-9]{1,2}\s*[/\-.]\s*[0-9]{1,2}\s*[/\-.]\s*20\d{2}|"
-        r"[0-9]{1,2}\s*[/\-.]\s*20\d{2})",
+        r"([0-9]{1,2}\s*[/\-.]\s*[0-9]{1,2}\s*[/\-.]\s*(?:20\d{2}|\d{2})|"
+        r"[0-9]{1,2}\s*[/\-.]\s*(?:20\d{2}|\d{2}))",
         re.IGNORECASE,
     ),
 }
@@ -53,6 +53,8 @@ def _normalize_date(raw_date: str) -> str | None:
     try:
         if len(parts) == 3:
             day, month, year = map(int, parts)
+            if year < 100:
+                year += 2000
             parsed = datetime(year, month, day)
             return parsed.strftime("%Y-%m-%d")
 
@@ -61,6 +63,9 @@ def _normalize_date(raw_date: str) -> str | None:
 
             if not 1 <= month <= 12:
                 return None
+
+            if year < 100:
+                year += 2000
 
             return f"{year:04d}-{month:02d}"
 
