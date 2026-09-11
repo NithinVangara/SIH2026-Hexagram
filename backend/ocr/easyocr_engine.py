@@ -28,6 +28,10 @@ class EasyOCREngine:
 
     def read(self, image: str | Path | np.ndarray) -> list[dict]:
         """Run OCR and return M1 text blocks with stable IDs."""
+        # EasyOCR accepts a path string, bytes, or numpy array, but not pathlib.Path.
+        if isinstance(image, Path):
+            image = str(image)
+
         result = self.reader.readtext(image)
         text_blocks: list[dict] = []
 
