@@ -26,13 +26,31 @@ class EasyOCREngine:
         y_max = int(round(points[:, 1].max()))
         return [x_min, y_min, x_max, y_max]
 
+    def _read_raw(self, image: str | np.ndarray):
+        result = self.reader.readtext(image)
+
+        # If the default orientation produces no text, let EasyOCR retry
+        # common quarter-turn orientations. Recognition is performed on
+        # rotated crops while coordinates remain associated with the image.
+        if not result:
+            try:
+                result = self.reader.readtext(
+                    image,
+                    rotation_info=[90, 180, 270],
+                )
+            except TypeError:
+                # Compatibility with lightweight test doubles and older
+                # EasyOCR versions without rotation_info support.
+                result = []
+
+        return result
+
     def read(self, image: str | Path | np.ndarray) -> list[dict]:
         """Run OCR and return M1 text blocks with stable IDs."""
-        # EasyOCR accepts a path string, bytes, or numpy array, but not pathlib.Path.
         if isinstance(image, Path):
             image = str(image)
 
-        result = self.reader.readtext(image)
+        result = self._read_raw(image)
         text_blocks: list[dict] = []
 
         for index, item in enumerate(result, start=1):
