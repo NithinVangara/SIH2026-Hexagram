@@ -8,6 +8,22 @@ import numpy as np
 class EasyOCREngine:
     """M1 OCR adapter that exposes raw text, confidence, and source boxes."""
 
+    DECLARATION_ANCHORS = (
+        "mrp",
+        "maximum retail",
+        "net quantity",
+        "net weight",
+        "net content",
+        "mfd",
+        "mfg",
+        "pkd",
+        "packed on",
+        "use by",
+        "use before",
+        "expiry",
+        "best before",
+    )
+
     def __init__(self, languages: list[str] | None = None, gpu: bool = False) -> None:
         try:
             import easyocr
@@ -26,22 +42,36 @@ class EasyOCREngine:
         y_max = int(round(points[:, 1].max()))
         return [x_min, y_min, x_max, y_max]
 
+    @classmethod
+    def _anchor_score(cls, result: list) -> int:
+        score = 0
+        for item in result:
+            if len(item) < 2:
+                continue
+            text = str(item[1]).lower()
+            score += sum(1 for anchor in cls.DECLARATION_ANCHORS if anchor in text)
+        return score
+
     def _read_raw(self, image: str | np.ndarray):
         result = self.reader.readtext(image)
 
-        # If the default orientation produces no text, let EasyOCR retry
-        # common quarter-turn orientations. Recognition is performed on
-        # rotated crops while coordinates remain associated with the image.
-        if not result:
-            try:
-                result = self.reader.readtext(
-                    image,
-                    rotation_info=[90, 180, 270],
-                )
-            except TypeError:
-                # Compatibility with lightweight test doubles and older
-                # EasyOCR versions without rotation_info support.
-                result = []
+        # EasyOCR can detect many characters on a rotated package while
+        # missing the declaration labels that matter to M1. In that case,
+        # retry quarter-turn recognition and prefer the orientation exposing
+        # more declaration anchors. This keeps rotation handling inside OCR
+        # rather than changing the downstream observation contract.
+        try:
+            rotated_result = self.reader.readtext(
+                image,
+                rotation_info=[90, 180, 270],
+            )
+        except TypeError:
+            rotated_result = []
+
+        if rotated_result and self._anchor_score(rotated_result) > self._anchor_score(result):
+            result = rotated_result
+        elif not result and rotated_result:
+            result = rotated_result
 
         return result
 
