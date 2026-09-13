@@ -6,7 +6,6 @@ MRP_LABEL_PATTERN = re.compile(r"(?:\bM\s*\.?\s*R\s*\.?\s*P\s*\.?|\bMAXIMUM\s+RE
 CURRENCY_AMOUNT_PATTERN = re.compile(r"(?:₹\s*|\bRS\.?\s*|\bINR\s*)(?P<amount>\d+(?:[.,]\d{1,2})?)", re.IGNORECASE)
 MRP_AMOUNT_PATTERN = re.compile(r"(?:\bM\s*\.?\s*R\s*\.?\s*P\s*\.?|\bMAXIMUM\s+RETAIL\s+PRICE\b)[:\-\s₹Rs.INR]*(?P<amount>\d+(?:[.,]\d{1,2})?)", re.IGNORECASE)
 BARE_AMOUNT_PATTERN = re.compile(r"\d+(?:[.,]\d{1,2})?")
-
 MAX_MRP_AMOUNT = Decimal("1000000")
 MAX_MRP_INTEGER_DIGITS = 5
 MIN_MRP_AMOUNT = Decimal("1")
@@ -18,16 +17,12 @@ def _parse_amount(value: str) -> int | float:
         amount = Decimal(value)
     except InvalidOperation as exc:
         raise ValueError(f"Invalid price value: {value}") from exc
-    if amount < MIN_MRP_AMOUNT:
-        raise ValueError("Price candidate is implausibly small")
-    if amount > MAX_MRP_AMOUNT:
-        raise ValueError("Price candidate is implausibly large")
+    if amount < MIN_MRP_AMOUNT or amount > MAX_MRP_AMOUNT:
+        raise ValueError("Price candidate is implausible")
     integer_part = value.split(".", 1)[0]
     if len(integer_part.lstrip("0")) > MAX_MRP_INTEGER_DIGITS:
         raise ValueError("Price candidate has too many integer digits")
-    if amount == amount.to_integral_value():
-        return int(amount)
-    return float(amount)
+    return int(amount) if amount == amount.to_integral_value() else float(amount)
 
 
 def _ocr_confidence(block: dict[str, Any]) -> float:
@@ -49,6 +44,11 @@ def _bbox(block: dict[str, Any]) -> tuple[float, float, float, float] | None:
     if x2 < x1 or y2 < y1:
         return None
     return x1, y1, x2, y2
+
+
+def _same_line(label_box: tuple[float, float, float, float], value_box: tuple[float, float, float, float]) -> bool:
+    overlap = max(0.0, min(label_box[3], value_box[3]) - max(label_box[1], value_box[1]))
+    return overlap / max(1.0, min(label_box[3] - label_box[1], value_box[3] - value_box[1])) >= 0.35
 
 
 def _spatial_distance(label_block: dict[str, Any], value_block: dict[str, Any]) -> float | None:
@@ -92,34 +92,47 @@ def _find_same_block_candidate(block: dict[str, Any]) -> dict[str, Any] | None:
 
 def _find_split_mrp_candidate(blocks: list[dict[str, Any]]) -> dict[str, Any] | None:
     for label_index, label_block in enumerate(blocks):
-        text = str(label_block.get("text", ""))
-        region_id = label_block.get("id")
-        if not text or not region_id or not MRP_LABEL_PATTERN.search(text):
+        label_text = str(label_block.get("text", ""))
+        label_id = label_block.get("id")
+        label_box = _bbox(label_block)
+        if not label_id or label_box is None or not MRP_LABEL_PATTERN.search(label_text):
             continue
-        nearby: list[tuple[float, int, dict[str, Any]]] = []
+        nearby: list[tuple[int, float, int, dict[str, Any]]] = []
         for value_index, value_block in enumerate(blocks):
             if value_index == label_index:
                 continue
             value_text = str(value_block.get("text", "")).strip()
-            value_region_id = value_block.get("id")
-            if not value_text or not value_region_id:
+            value_id = value_block.get("id")
+            value_box = _bbox(value_block)
+            if not value_text or not value_id or value_box is None:
                 continue
             distance = _spatial_distance(label_block, value_block)
-            if distance is None or distance > 180:
+            if distance is None or distance > 140:
                 continue
             currency_match = CURRENCY_AMOUNT_PATTERN.fullmatch(value_text)
             bare_match = BARE_AMOUNT_PATTERN.fullmatch(value_text)
             if not currency_match and not bare_match:
+                continue
+            lx1, ly1, lx2, ly2 = label_box
+            vx1, vy1, vx2, vy2 = value_box
+            # A split MRP value must be on the same text line and immediately
+            # to the right of the label. This is deliberately stricter than
+            # generic nearest-neighbour matching because package images contain
+            # many unrelated numeric identifiers.
+            if not _same_line(label_box, value_box):
+                continue
+            if vx1 < lx2 - 8 or (vx1 - lx2) > 100:
                 continue
             amount_text = currency_match.group("amount") if currency_match else bare_match.group(0)
             try:
                 value = _parse_amount(amount_text)
             except ValueError:
                 continue
-            nearby.append((distance, value_index, _make_candidate(value, min(_ocr_confidence(label_block), _ocr_confidence(value_block)) * 0.90, [region_id, value_region_id], "SPLIT_MRP")))
+            confidence = min(_ocr_confidence(label_block), _ocr_confidence(value_block)) * 0.90
+            nearby.append((0 if currency_match else 1, distance, value_index, _make_candidate(value, confidence, [label_id, value_id], "SPLIT_MRP")))
         if nearby:
-            nearby.sort(key=lambda item: (item[0], item[1]))
-            return nearby[0][2]
+            nearby.sort(key=lambda item: (item[0], item[1], item[2]))
+            return nearby[0][3]
     return None
 
 
